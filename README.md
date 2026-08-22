@@ -1,120 +1,171 @@
-# MechFlow — Demand Forecasting & Order Fulfillment Platform
+# MECHFLOW Operations API
 
-Enterprise frontend for a mechanical parts manufacturer: orders, inventory,
-production, demand forecasting, recommendations, alerts, and analytics.
+A backend for a mechanical/factory operations dashboard: machines, work
+orders, preventive & corrective maintenance, spare-parts inventory, and
+real-time alerts — built to sit behind the MECHFLOW React/Vite frontend
+(FastAPI + SQLAlchemy + SQLite, JWT auth).
 
-## 1. Install
+> Your uploaded `src/` folder came through empty, so this backend wasn't
+> built against actual frontend components — it's designed from the
+> project's name, title ("MECHFLOW | Factory Operations"), and the
+> Recharts dependency, covering the data a factory-ops dashboard needs.
+> Endpoints and field names are easy to adjust once I can see your
+> actual UI/API calls.
 
-```bash
-npm install
-```
+## Domain model
 
-## 2. Point the app at your backend — WHERE to put the API URL
+| Entity | Purpose |
+|---|---|
+| **User** | Login accounts. Roles: `admin`, `supervisor`, `technician`. |
+| **Department** | Organizational grouping for machines (e.g. Machining, Assembly). |
+| **Machine** | A piece of equipment: status, criticality, maintenance dates. |
+| **WorkOrder** | A task against a machine: repair, inspection, PM, emergency — with a status workflow. |
+| **MaintenanceRecord** | What was actually done to a machine, optionally linked to a work order, with parts consumed and downtime logged. |
+| **SparePart** | Inventory item with stock level and reorder threshold. |
+| **PartUsage** | Join row: which parts (and how many) a maintenance record consumed. |
+| **Alert** | Machine-level alert (sensor, system, or manual) with acknowledge/resolve workflow. |
 
-Open the **`.env`** file in the project root (already created for you):
-
-```
-VITE_API_BASE_URL=http://localhost:3000/api
-```
-
-Change this one line to wherever your backend actually runs, e.g.
-`https://api.yourcompany.com/api`. Nothing else needs to change — every
-request in the app goes through this single value.
-
-- Never hardcode URLs inside components. All requests flow through
-  `src/api/client.ts`, which reads `VITE_API_BASE_URL`.
-- After editing `.env`, restart `npm run dev` (Vite only reads `.env` at
-  startup).
-- For different environments, copy `.env` to `.env.production` /
-  `.env.staging` with the right URL — Vite picks the right one based on
-  the build mode.
-
-## 3. Run
+## Getting started
 
 ```bash
-npm run dev
+cd mechflow-backend
+./run.sh
 ```
 
-Opens at `http://localhost:5173`. The app expects a REST backend at the
-`VITE_API_BASE_URL` you set above. Until that backend exists, every page
-will correctly show its **loading skeleton** and then an **error / retry**
-state — that's expected, not a bug. Wire up the endpoints below one at a
-time and each page will start rendering real data automatically.
+`run.sh` creates a virtualenv, installs `requirements.txt`, copies
+`.env.example` to `.env` on first run, and starts the API on
+**http://localhost:8000**.
 
-## 4. Backend endpoints the frontend expects
+Interactive API docs: **http://localhost:8000/docs**
 
-All defined in `src/api/*.ts` — change the path strings there if your
-backend uses different routes; nothing elsewhere needs to change.
+On first startup (empty database), the app auto-creates all tables and
+seeds demo data — a few machines, work orders, parts, alerts, and four
+login accounts — so the dashboard has something to show immediately:
 
-```
-GET    /dashboard/kpis
-GET    /dashboard/fulfillment-breakdown
-GET    /dashboard/inventory-risk-breakdown
-GET    /dashboard/demand-vs-inventory
+| Username | Password | Role |
+|---|---|---|
+| `admin` | `ChangeMe123!` | admin |
+| `jrivera` | `Supervisor123!` | supervisor |
+| `dkowalski` | `Technician123!` | technician |
+| `mchen` | `Technician123!` | technician |
 
-GET    /orders?search=&status=&priority=&customerId=&productId=&dateFrom=&dateTo=&page=&pageSize=
-GET    /orders/:id
-POST   /orders
-PATCH  /orders/:id
-DELETE /orders/:id
+**Change these before deploying anywhere real** — set `SEED_ADMIN_PASSWORD`
+in `.env`, or just update the passwords via the API afterward. Set
+`SEED_DEMO_DATA=false` in `.env` to skip seeding entirely and start empty.
 
-GET    /products?search=
-GET    /products/:id
+## Authentication
 
-GET    /inventory?search=&category=&warehouse=&stockStatus=
-GET    /inventory/:id
-PATCH  /inventory/:id
-
-GET    /production?search=&status=&dateFrom=&dateTo=
-GET    /production/:id
-POST   /production
-
-GET    /forecasts?horizon=
-GET    /forecasts/:productId?horizon=
-
-GET    /recommendations?status=
-PATCH  /recommendations/:id
-
-GET    /alerts?severity=&status=
-PATCH  /alerts/:id
-
-GET    /analytics?dateFrom=&dateTo=
-```
-
-Response shapes match the TypeScript interfaces in `src/types/index.ts`
-(`Order`, `OrderDetail`, `Product`, `InventoryDetail`, `ProductionRecord`,
-`Forecast`, `Recommendation`, `Alert`, `DashboardKpis`, etc.) — treat that
-file as the API contract.
-
-## 5. Build for production
+JWT bearer tokens, standard OAuth2 password flow:
 
 ```bash
-npm run build
+curl -X POST http://localhost:8000/api/v1/auth/login \
+  -H "Content-Type: application/x-www-form-urlencoded" \
+  -d "username=admin&password=ChangeMe123!"
+# -> {"access_token": "...", "token_type": "bearer"}
+
+curl http://localhost:8000/api/v1/machines \
+  -H "Authorization: Bearer <token>"
 ```
 
-Output goes to `dist/`. Set `VITE_API_BASE_URL` for the target environment
-before building (env vars are baked in at build time, not runtime).
+New accounts via `POST /api/v1/auth/register` are always created as
+`technician` (self-registration can't grant elevated roles). An admin
+promotes someone via `PATCH /api/v1/users/{id}` with `{"role": "supervisor"}`.
 
-## Project structure
+Role checks:
+- **Read** endpoints (list/get machines, work orders, alerts, inventory,
+  dashboard) — any authenticated, active user.
+- **Write** endpoints for machines, work orders, and inventory — `supervisor`
+  or `admin`.
+- **User management** (`/users/*`) — `admin` only.
+- Logging maintenance and handling alerts (create/acknowledge/resolve) —
+  any authenticated user, since that's normally the technician on the floor.
+
+## Key endpoints
+
+All routes are under `/api/v1`.
 
 ```
-src/
-├── api/            # one file per resource; client.ts holds the base URL + axios instance
-├── components/
-│   ├── layout/      # Sidebar, Header, AppLayout
-│   ├── common/      # Badge, KpiCard, EmptyState, ErrorState, Skeleton, ConfirmModal, PageHeader
-├── pages/           # one component per route
-├── hooks/           # React Query hooks wrapping each api/ module
-├── types/           # shared TS interfaces — the API contract
-└── utils/           # formatters (currency, date, relative time)
+POST   /auth/register              POST /auth/login              GET /auth/me
+
+GET    /machines                   POST   /machines               GET/PATCH/DELETE /machines/{id}
+GET    /machines/{id}/work-orders  GET    /machines/{id}/maintenance-history
+
+GET    /work-orders                POST   /work-orders            GET/PATCH/DELETE /work-orders/{id}
+PATCH  /work-orders/{id}/status    (enforces a valid status-transition graph)
+
+GET    /maintenance                POST   /maintenance             GET /maintenance/{id}
+                                    (consumes spare-part stock atomically; 400 if insufficient)
+
+GET    /inventory/parts            POST   /inventory/parts        GET/PATCH/DELETE /inventory/parts/{id}
+GET    /inventory/parts/low-stock  POST   /inventory/parts/{id}/restock
+
+GET    /alerts                     POST   /alerts
+POST   /alerts/{id}/acknowledge    POST   /alerts/{id}/resolve
+
+GET    /departments                POST/PATCH/DELETE /departments/{id}
+GET    /users                      PATCH/DELETE /users/{id}          (admin only)
+
+GET    /dashboard/summary          -> counts + breakdowns for cards/pie charts
+GET    /dashboard/downtime-trend   -> daily downtime minutes for the last N days (line/bar chart)
 ```
 
-## Notes
+Every list endpoint supports `skip`/`limit` pagination and relevant filters
+(e.g. `GET /work-orders?status=open&priority=critical`).
 
-- Every list/detail page implements all 5 required UI states: loading
-  (skeleton), empty, error (with retry), success, and real data — nothing
-  renders a blank screen.
-- Deleting an order requires confirmation via `ConfirmModal`.
-- No business data is hardcoded — every page fetches through React Query.
-- Sidebar collapses into a drawer below the `lg` breakpoint; tables scroll
-  horizontally on small screens.
+## Business rules worth knowing
+
+- **Work order status** follows a fixed graph (`open → assigned → in_progress
+  → completed`, with `on_hold`/`cancelled` branches). Invalid transitions
+  return `400`. Completing a work order auto-fills `completed_at` and, if not
+  supplied, `actual_hours` from `started_at`.
+- **Maintenance + parts** is one transaction: stock is checked for every part
+  *before* any row is written, so a record either fully applies or fails
+  cleanly with a clear "not enough stock" message — never a partial
+  deduction. Recording maintenance against a work order auto-completes that
+  work order and updates `machine.last_maintenance_at`.
+- **Deactivating a user** is a soft delete (`is_active=False`), not a hard
+  delete, so historical work orders and maintenance records keep valid
+  references to who did what.
+- **Spare parts** used in any maintenance history can't be hard-deleted, to
+  keep that history intact.
+
+## Connecting the React frontend
+
+Add to the frontend's `.env`:
+```
+VITE_API_BASE_URL=http://localhost:8000/api/v1
+```
+
+CORS is open to `http://localhost:5173` (Vite's default dev port) out of
+the box — add any other origins to `CORS_ORIGINS` in `.env`.
+
+## Project layout
+
+```
+app/
+  main.py          FastAPI app, CORS, router registration, startup/seed
+  config.py        Settings from environment variables
+  database.py      SQLAlchemy engine/session
+  models.py        ORM models + enums
+  schemas.py       Pydantic request/response models
+  security.py      Password hashing, JWT encode/decode
+  dependencies.py  get_current_user / role-check dependencies
+  seed.py          Demo data (runs once, only against an empty DB)
+  routers/         One file per resource (auth, users, machines, work_orders,
+                    maintenance, inventory, alerts, departments, dashboard)
+```
+
+## Notes on this environment
+
+This sandbox has no network access, so the exact dependency versions in
+`requirements.txt` (pinned to what was current and mutually compatible as of
+early 2026) could not be `pip install`ed and run here to smoke-test end to
+end — every file was written and manually re-checked line-by-line against
+the FastAPI/SQLAlchemy 2.0/Pydantic v2 APIs instead. If anything doesn't
+import cleanly on your machine, tell me the traceback and I'll fix it
+immediately.
+
+`bcrypt` is pinned to `4.0.1` deliberately: newer `bcrypt` 4.1+ removes an
+attribute `passlib` 1.7.4 reads on startup, which throws a warning (and on
+some versions an error) the first time you hash a password. This is a
+known, common gotcha — pinning avoids it.
